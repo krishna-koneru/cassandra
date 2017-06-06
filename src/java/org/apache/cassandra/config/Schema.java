@@ -17,15 +17,26 @@
  */
 package org.apache.cassandra.config;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.UUID;
 import java.util.stream.Collectors;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Sets;
+import org.cliffc.high_scale_lib.NonBlockingHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.cassandra.cql3.functions.*;
+import org.apache.cassandra.cql3.functions.Function;
+import org.apache.cassandra.cql3.functions.FunctionName;
+import org.apache.cassandra.cql3.functions.UDAggregate;
+import org.apache.cassandra.cql3.functions.UDFunction;
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.db.SystemKeyspace;
@@ -36,11 +47,13 @@ import org.apache.cassandra.db.marshal.UserType;
 import org.apache.cassandra.index.Index;
 import org.apache.cassandra.io.sstable.Descriptor;
 import org.apache.cassandra.locator.LocalStrategy;
-import org.apache.cassandra.schema.*;
+import org.apache.cassandra.schema.KeyspaceMetadata;
+import org.apache.cassandra.schema.KeyspaceParams;
+import org.apache.cassandra.schema.Keyspaces;
+import org.apache.cassandra.schema.SchemaKeyspace;
 import org.apache.cassandra.service.MigrationManager;
 import org.apache.cassandra.utils.ConcurrentBiMap;
 import org.apache.cassandra.utils.Pair;
-import org.cliffc.high_scale_lib.NonBlockingHashMap;
 
 public class Schema
 {
@@ -434,7 +447,7 @@ public class Schema
      */
     public void load(ViewDefinition view)
     {
-        CFMetaData cfm = view.metadata;
+        CFMetaData cfm = view.getMetadata();
         Pair<String, String> key = Pair.create(cfm.ksName, cfm.cfName);
 
         if (cfIdMap.containsKey(key))
@@ -659,7 +672,7 @@ public class Schema
         Keyspace keyspace = Keyspace.open(view.ksName);
 
         // Make sure the keyspace is initialized and initialize the table.
-        keyspace.initCf(view.metadata, true);
+        keyspace.initCf(view.getMetadata(), true);
         // Update the keyspaces map with the updated metadata
         update(view.ksName, ks -> ks.withSwapped(ks.views.with(view)));
         // Update the table ID <-> table name map (cfIdMap)
@@ -672,7 +685,7 @@ public class Schema
     public void updateView(ViewDefinition view)
     {
         ViewDefinition current = getKSMetaData(view.ksName).views.get(view.viewName).get();
-        boolean changeAffectsStatements = current.metadata.apply(view.metadata);
+        boolean changeAffectsStatements = current.getMetadata().apply(view.getMetadata());
 
         Keyspace keyspace = Keyspace.open(current.ksName);
         keyspace.getColumnFamilyStore(current.viewName).reload();
@@ -697,15 +710,15 @@ public class Schema
         unload(view);
         setKeyspaceMetadata(newKsm);
 
-        CompactionManager.instance.interruptCompactionFor(Collections.singleton(view.metadata), true);
+        CompactionManager.instance.interruptCompactionFor(Collections.singleton(view.getMetadata()), true);
 
         if (DatabaseDescriptor.isAutoSnapshot())
             cfs.snapshot(Keyspace.getTimestampedSnapshotName(cfs.name));
-        Keyspace.open(ksName).dropCf(view.metadata.cfId);
+        Keyspace.open(ksName).dropCf(view.getMetadata().cfId);
         Keyspace.open(ksName).viewManager.reload();
         MigrationManager.instance.notifyDropView(view);
 
-        CommitLog.instance.forceRecycleAllSegments(Collections.singleton(view.metadata.cfId));
+        CommitLog.instance.forceRecycleAllSegments(Collections.singleton(view.getMetadata().cfId));
     }
 
     public void addType(UserType ut)

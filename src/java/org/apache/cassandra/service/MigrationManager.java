@@ -358,7 +358,7 @@ public class MigrationManager
 
     public static void announceNewView(ViewDefinition view, boolean announceLocally) throws ConfigurationException
     {
-        view.metadata.validate();
+        view.getMetadata().validate();
 
         KeyspaceMetadata ksm = Schema.instance.getKSMetaData(view.ksName);
         if (ksm == null)
@@ -429,14 +429,14 @@ public class MigrationManager
 
     public static void announceViewUpdate(ViewDefinition view, boolean announceLocally) throws ConfigurationException
     {
-        view.metadata.validate();
+        view.getMetadata().validate();
 
         ViewDefinition oldView = Schema.instance.getView(view.ksName, view.viewName);
         if (oldView == null)
             throw new ConfigurationException(String.format("Cannot update non existing materialized view '%s' in keyspace '%s'.", view.viewName, view.ksName));
         KeyspaceMetadata ksm = Schema.instance.getKSMetaData(view.ksName);
 
-        oldView.metadata.validateCompatibility(view.metadata);
+        oldView.getMetadata().validateCompatibility(view.getMetadata());
 
         logger.info("Update view '{}/{}' From {} To {}", view.ksName, view.viewName, oldView, view);
         announce(SchemaKeyspace.makeUpdateViewMutation(ksm, oldView, view, FBUtilities.timestampMicros()), announceLocally);

@@ -69,7 +69,7 @@ public class AlterViewStatement extends SchemaAlteringStatement
 
         attrs.validate();
 
-        TableParams params = attrs.asAlteredTableParams(viewCopy.metadata.params);
+        TableParams params = attrs.asAlteredTableParams(viewCopy.getMetadata().params);
         if (params.gcGraceSeconds == 0)
         {
             throw new InvalidRequestException("Cannot alter gc_grace_seconds of a materialized view to 0, since this " +
@@ -84,7 +84,7 @@ public class AlterViewStatement extends SchemaAlteringStatement
                                               "the corresponding data in the parent table.");
         }
 
-        viewCopy.metadata.params(params);
+        viewCopy.getMetadata().params(params);
 
         MigrationManager.announceViewUpdate(viewCopy, isLocalOnly);
         return new Event.SchemaChange(Event.SchemaChange.Change.UPDATED, Event.SchemaChange.Target.TABLE, keyspace(), columnFamily());

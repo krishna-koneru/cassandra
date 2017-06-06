@@ -29,8 +29,6 @@ import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.db.marshal.CollectionType;
-import org.apache.cassandra.db.marshal.CounterColumnType;
-import org.apache.cassandra.db.marshal.ReversedType;
 import org.apache.cassandra.db.view.View;
 import org.apache.cassandra.exceptions.*;
 import org.apache.cassandra.schema.IndexMetadata;
@@ -176,7 +174,7 @@ public class AlterTableStatement extends SchemaAlteringStatement
                             if (view.includeAllColumns)
                             {
                                 ViewDefinition viewCopy = view.copy();
-                                viewCopy.metadata.addColumnDefinition(ColumnDefinition.regularDef(viewCopy.metadata, columnName.bytes, type));
+                                viewCopy.getMetadata().addColumnDefinition(ColumnDefinition.regularDef(viewCopy.getMetadata(), columnName.bytes, type));
                                 if (viewUpdates == null)
                                     viewUpdates = new ArrayList<>();
                                 viewUpdates.add(viewCopy);
@@ -289,8 +287,8 @@ public class AlterTableStatement extends SchemaAlteringStatement
                         if (!view.includes(from)) continue;
 
                         ViewDefinition viewCopy = view.copy();
-                        ColumnIdentifier viewFrom = entry.getKey().getIdentifier(viewCopy.metadata);
-                        ColumnIdentifier viewTo = entry.getValue().getIdentifier(viewCopy.metadata);
+                        ColumnIdentifier viewFrom = entry.getKey().getIdentifier(viewCopy.getMetadata());
+                        ColumnIdentifier viewTo = entry.getValue().getIdentifier(viewCopy.getMetadata());
                         viewCopy.renameColumn(viewFrom, viewTo);
 
                         if (viewUpdates == null)

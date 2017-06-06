@@ -221,7 +221,7 @@ public abstract class ModificationStatement implements CQLStatement
             state.hasColumnFamilyAccess(cfm, Permission.SELECT);
             do
             {
-                state.hasColumnFamilyAccess(views.next().metadata, Permission.MODIFY);
+                state.hasColumnFamilyAccess(views.next().getMetadata(), Permission.MODIFY);
             } while (views.hasNext());
         }
 

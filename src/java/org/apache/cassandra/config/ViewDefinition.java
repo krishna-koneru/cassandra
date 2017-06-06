@@ -17,18 +17,29 @@
  */
 package org.apache.cassandra.config;
 
+import java.nio.ByteBuffer;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.stream.Collectors;
+import java.util.stream.StreamSupport;
 
-import org.antlr.runtime.*;
-import org.apache.cassandra.cql3.*;
-import org.apache.cassandra.cql3.statements.SelectStatement;
-import org.apache.cassandra.db.view.View;
-import org.apache.cassandra.exceptions.SyntaxException;
 import org.apache.commons.lang3.builder.HashCodeBuilder;
 import org.apache.commons.lang3.builder.ToStringBuilder;
+
+import org.antlr.runtime.RecognitionException;
+import org.apache.cassandra.cql3.CQLFragmentParser;
+import org.apache.cassandra.cql3.ColumnIdentifier;
+import org.apache.cassandra.cql3.CqlParser;
+import org.apache.cassandra.cql3.QueryProcessor;
+import org.apache.cassandra.cql3.Relation;
+import org.apache.cassandra.cql3.statements.ParsedStatement;
+import org.apache.cassandra.cql3.statements.SelectStatement;
+import org.apache.cassandra.db.filter.ColumnFilter;
+import org.apache.cassandra.db.view.View;
+import org.apache.cassandra.exceptions.SyntaxException;
+import org.apache.cassandra.service.ClientState;
 
 public class ViewDefinition
 {
@@ -37,8 +48,12 @@ public class ViewDefinition
     public final UUID baseTableId;
     public final String baseTableName;
     public final boolean includeAllColumns;
-    public final CFMetaData metadata;
+    // To save some space,metadata only carries denormalized columns.
+    // view metadata does not necessarily contain all basetable columns that it uses.
+    // Use queriedColumns instead to check if a view uses/depends on a column.
+    private final CFMetaData metadata;
 
+    private Map<ByteBuffer, ColumnDefinition> queriedColumns;
     public SelectStatement.RawStatement select;
     public String whereClause;
 
@@ -62,6 +77,50 @@ public class ViewDefinition
         this.select = select;
         this.whereClause = whereClause;
         this.metadata = metadata;
+        // Base table might not be initialized yet, so prepare select might fail.getQueriedColumns() will update this later.
+        this.queriedColumns = null;
+    }
+
+
+    public Map<ByteBuffer, ColumnDefinition> getQueriedColumns()
+    {
+        if (queriedColumns == null)
+            UpdateQueriedColumns();
+
+        assert this.queriedColumns != null : "Could not get columns used in View SELECT";
+
+        return queriedColumns;
+    }
+
+    private void UpdateQueriedColumns()
+    {
+        SelectStatement selectStatement;
+        ClientState state = ClientState.forInternalCalls();
+        state.setKeyspace(baseTableMetadata().ksName);
+        this.select.prepareKeyspace(state);
+        ParsedStatement.Prepared prepared = this.select.prepare(true);
+        selectStatement = (SelectStatement) prepared.statement;
+
+
+        ColumnFilter cf = selectStatement.queriedColumns();
+
+
+        this.queriedColumns = StreamSupport.stream(cf.queriedColumns().spliterator(),true)
+                                           .collect(Collectors.toMap(
+                                           e -> e.name.bytes,
+                                           e -> e
+                                           ));
+        // Also make sure primary key columns are included.
+        this.queriedColumns.putAll(this.metadata.getColumnMetadata());
+    }
+
+    /**
+     * NOTE : metadata does not contain all the columns that view depends on. Use queriedColums() for column information
+     * @return view metadata.
+     */
+    public CFMetaData getMetadata()
+    {
+        return metadata;
     }
 
     /**
@@ -69,7 +128,7 @@ public class ViewDefinition
      */
     public boolean includes(ColumnIdentifier column)
     {
-        return metadata.getColumnDefinition(column) != null;
+        return getQueriedColumns().get(column.bytes) != null ;
     }
 
     public ViewDefinition copy()
@@ -124,6 +183,7 @@ public class ViewDefinition
                .append("includeAllColumns", includeAllColumns)
                .append("whereClause", whereClause)
                .append("metadata", metadata)
+               .append("queriedColumns", getQueriedColumns().values())
                .toString();
     }
 
@@ -135,7 +195,14 @@ public class ViewDefinition
      */
     public void renameColumn(ColumnIdentifier from, ColumnIdentifier to)
     {
-        metadata.renameColumn(from, to);
+        if (metadata.getColumnDefinition(from) != null)
+        {
+            metadata.renameColumn(from, to);
+        }
+        else
+        {
+            assert includes(from) : "trying to rename non-existent column in view.";
+        }
 
         // convert whereClause to Relations, rename ids in Relations, then convert back to whereClause
         List<Relation> relations = whereClauseToRelations(whereClause);
@@ -148,6 +215,10 @@ public class ViewDefinition
         this.whereClause = View.relationsToWhereClause(newRelations);
         String rawSelect = View.buildSelectStatement(baseTableName, metadata.allColumns(), whereClause);
         this.select = (SelectStatement.RawStatement) QueryProcessor.parseStatement(rawSelect);
+        // basetable metadata has not been updated yet, so prepare select will fail. call to getQueriedColumns() will
+        // update this later.
+        this.queriedColumns = null ;
+
     }
 
     private static List<Relation> whereClauseToRelations(String whereClause)
@@ -163,4 +234,5 @@ public class ViewDefinition
             throw new RuntimeException("Unexpected error parsing materialized view's where clause while handling column rename: ", exc);
         }
     }
+
 }

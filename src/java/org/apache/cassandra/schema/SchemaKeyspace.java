@@ -716,7 +716,7 @@ public final class SchemaKeyspace
 
     private static void addViewToSchemaMutation(ViewDefinition view, boolean includeColumns, Mutation.SimpleBuilder builder)
     {
-        CFMetaData table = view.metadata;
+        CFMetaData table = view.getMetadata();
         Row.SimpleBuilder rowBuilder = builder.update(Views)
                                               .row(view.viewName)
                                               .add("include_all_columns", view.includeAllColumns)
@@ -744,7 +744,7 @@ public final class SchemaKeyspace
 
         builder.update(Views).row(view.viewName).delete();
 
-        CFMetaData table = view.metadata;
+        CFMetaData table = view.getMetadata();
         for (ColumnDefinition column : table.allColumns())
             dropColumnFromSchemaMutation(table, column, builder);
 
@@ -763,32 +763,32 @@ public final class SchemaKeyspace
 
         addViewToSchemaMutation(newView, false, builder);
 
-        MapDifference<ByteBuffer, ColumnDefinition> columnDiff = Maps.difference(oldView.metadata.getColumnMetadata(),
-                                                                                 newView.metadata.getColumnMetadata());
+        MapDifference<ByteBuffer, ColumnDefinition> columnDiff = Maps.difference(oldView.getMetadata().getColumnMetadata(),
+                                                                                 newView.getMetadata().getColumnMetadata());
 
         // columns that are no longer needed
         for (ColumnDefinition column : columnDiff.entriesOnlyOnLeft().values())
-            dropColumnFromSchemaMutation(oldView.metadata, column, builder);
+            dropColumnFromSchemaMutation(oldView.getMetadata(), column, builder);
 
         // newly added columns
         for (ColumnDefinition column : columnDiff.entriesOnlyOnRight().values())
-            addColumnToSchemaMutation(newView.metadata, column, builder);
+            addColumnToSchemaMutation(newView.getMetadata(), column, builder);
 
         // old columns with updated attributes
         for (ByteBuffer name : columnDiff.entriesDiffering().keySet())
-            addColumnToSchemaMutation(newView.metadata, newView.metadata.getColumnDefinition(name), builder);
+            addColumnToSchemaMutation(newView.getMetadata(), newView.getMetadata().getColumnDefinition(name), builder);
 
         // dropped columns
         MapDifference<ByteBuffer, CFMetaData.DroppedColumn> droppedColumnDiff =
-        Maps.difference(oldView.metadata.getDroppedColumns(), oldView.metadata.getDroppedColumns());
+        Maps.difference(oldView.getMetadata().getDroppedColumns(), oldView.getMetadata().getDroppedColumns());
 
         // newly dropped columns
         for (CFMetaData.DroppedColumn column : droppedColumnDiff.entriesOnlyOnRight().values())
-            addDroppedColumnToSchemaMutation(oldView.metadata, column, builder);
+            addDroppedColumnToSchemaMutation(oldView.getMetadata(), column, builder);
 
         // columns added then dropped again
         for (ByteBuffer name : droppedColumnDiff.entriesDiffering().keySet())
-            addDroppedColumnToSchemaMutation(newView.metadata, newView.metadata.getDroppedColumns().get(name), builder);
+            addDroppedColumnToSchemaMutation(newView.getMetadata(), newView.getMetadata().getDroppedColumns().get(name), builder);
 
         return builder;
     }

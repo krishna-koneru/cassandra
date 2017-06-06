@@ -60,7 +60,7 @@ public final class Views implements Iterable<ViewDefinition>
 
     public Iterable<CFMetaData> metadatas()
     {
-        return Iterables.transform(views.values(), view -> view.metadata);
+        return Iterables.transform(views.values(), view -> view.getMetadata());
     }
 
     public int size()

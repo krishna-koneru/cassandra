@@ -105,7 +105,7 @@ public final class KeyspaceMetadata
         ViewDefinition view = views.getNullable(tableOrViewName);
         return view == null
              ? tables.getNullable(tableOrViewName)
-             : view.metadata;
+             : view.getMetadata();
     }
 
     public Set<String> existingIndexNames(String cfToExclude)

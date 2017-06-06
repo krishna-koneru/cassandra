@@ -18,7 +18,9 @@
 
 package org.apache.cassandra.cql3;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 
 import org.junit.After;
 import org.junit.Before;
@@ -27,15 +29,12 @@ import org.junit.Test;
 
 import com.datastax.driver.core.exceptions.InvalidQueryException;
 import junit.framework.Assert;
-
 import org.apache.cassandra.concurrent.SEPExecutor;
 import org.apache.cassandra.concurrent.Stage;
 import org.apache.cassandra.concurrent.StageManager;
-import org.apache.cassandra.config.CFMetaData;
-import org.apache.cassandra.config.ColumnDefinition;
-import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.db.SystemKeyspace;
+import org.apache.cassandra.exceptions.InvalidRequestException;
 import org.apache.cassandra.transport.ProtocolVersion;
 import org.apache.cassandra.utils.FBUtilities;
 
@@ -1820,5 +1819,185 @@ public class ViewFilteringTest extends CQLTester
         assertRows(execute("SELECT val from %s where k = 0 and c = 1"), row("bar"));
         assertRows(execute("SELECT c from mv_tstest where k = 0 and val = ?", "bar"));
         assertRows(execute("SELECT c from mv_tstest where k = 0 and val = ?", "baz"), row(0));
+    }
+
+    @Test
+    public void testMVNonPKFiltering() throws Throwable
+    {
+        createTable("CREATE TABLE %s (a int, b int, c int, d int, PRIMARY KEY (a))");
+
+        execute("USE " + keyspace());
+        executeNet(protocolVersion, "USE " + keyspace());
+
+        createView("mv_test1", "CREATE MATERIALIZED VIEW %s AS SELECT a,b,d FROM %%s WHERE a IS NOT NULL AND b IS NOT NULL and c = 1  PRIMARY KEY (a, b)");
+        createView("mv_test2", "CREATE MATERIALIZED VIEW %s AS SELECT c,d FROM %%s WHERE a IS NOT NULL AND b IS NOT NULL and c = 1 and d = 1 PRIMARY KEY (a,b)");
+        createView("mv_test3", "CREATE MATERIALIZED VIEW %s AS SELECT a,b,c,d FROM %%s WHERE a IS NOT NULL AND b IS NOT NULL PRIMARY KEY (a,b)");
+        createView("mv_test4", "CREATE MATERIALIZED VIEW %s AS SELECT c FROM %%s WHERE a IS NOT NULL AND b IS NOT NULL and d = 1 PRIMARY KEY (a,b)");
+        createView("mv_test5", "CREATE MATERIALIZED VIEW %s AS SELECT c FROM %%s WHERE a IS NOT NULL and d = 1 PRIMARY KEY (a,d)");
+
+        waitForView(keyspace(), "mv_test1");
+        waitForView(keyspace(), "mv_test2");
+        waitForView(keyspace(), "mv_test3");
+        waitForView(keyspace(), "mv_test4");
+        waitForView(keyspace(), "mv_test5");
+
+        execute("INSERT INTO %s (a, b, c, d) VALUES (?, ?, ?, ?)", 1,1,1,1);
+
+        //views should be updated.
+        assertRowsIgnoringOrder(execute("SELECT * FROM mv_test1"), row(1,1,1));
+        assertRowsIgnoringOrder(execute("SELECT * FROM mv_test2"), row(1,1,1,1));
+        assertRowsIgnoringOrder(execute("SELECT * FROM mv_test3"), row(1,1,1,1));
+        assertRowsIgnoringOrder(execute("SELECT * FROM mv_test4"), row(1,1,1));
+        assertRowsIgnoringOrder(execute("SELECT * FROM mv_test5"), row(1,1,1));
+
+        updateView("UPDATE %s set c = ? WHERE a=?", 0,1);
+
+        assertRowCount(execute("SELECT * FROM mv_test1"), 0);
+        assertRowCount(execute("SELECT * FROM mv_test2"), 0);
+        assertRowsIgnoringOrder(execute("SELECT * FROM mv_test3"), row(1,1,0,1));
+        assertRowsIgnoringOrder(execute("SELECT * FROM mv_test4"), row(1,1,0));
+        assertRowsIgnoringOrder(execute("SELECT * FROM mv_test5"), row(1,1,0));
+
+
+        updateView("UPDATE %s set c = ? WHERE a=?", 1,1);
+
+        // row should be back in views.
+        assertRowsIgnoringOrder(execute("SELECT * FROM mv_test1"), row(1,1,1));
+        assertRowsIgnoringOrder(execute("SELECT * FROM mv_test2"), row(1,1,1,1));
+        assertRowsIgnoringOrder(execute("SELECT * FROM mv_test3"), row(1,1,1,1));
+        assertRowsIgnoringOrder(execute("SELECT * FROM mv_test4"), row(1,1,1));
+        assertRowsIgnoringOrder(execute("SELECT * FROM mv_test5"), row(1,1,1));
+
+
+        updateView("UPDATE %s set d = ? WHERE a=?",0,1);
+
+
+        assertRowsIgnoringOrder(execute("SELECT * FROM mv_test1"), row(1,1,0));
+        assertRowCount(execute("SELECT * FROM mv_test2"), 0);
+        assertRowsIgnoringOrder(execute("SELECT * FROM mv_test3"), row(1,1,1,0));
+        assertRowCount(execute("SELECT * FROM mv_test4"), 0);
+        assertRowCount(execute("SELECT * FROM mv_test5"), 0);
+
+        updateView("UPDATE %s set c = ? WHERE a=?", 0,1);
+
+        assertRowCount(execute("SELECT * FROM mv_test1"), 0);
+        assertRowCount(execute("SELECT * FROM mv_test2"), 0);
+        assertRowsIgnoringOrder(execute("SELECT * FROM mv_test3"), row(1,1,0,0));
+        assertRowCount(execute("SELECT * FROM mv_test4"), 0);
+        assertRowCount(execute("SELECT * FROM mv_test5"), 0);
+
+        updateView("UPDATE %s set d = ? WHERE a=?", 1,1);
+
+        //should not update as c=0
+        assertRowCount(execute("SELECT * FROM mv_test1"), 0);
+        assertRowCount(execute("SELECT * FROM mv_test2"), 0);
+        assertRowsIgnoringOrder(execute("SELECT * FROM mv_test3"), row(1,1,0,1));
+        assertRowsIgnoringOrder(execute("SELECT * FROM mv_test4"), row(1,1,0));
+        assertRowsIgnoringOrder(execute("SELECT * FROM mv_test5"), row(1,1,0));
+
+        updateView("UPDATE %s set c = ? WHERE a=?", 1,1);
+
+        // row should be back in views.
+        assertRowsIgnoringOrder(execute("SELECT * FROM mv_test1"), row(1,1,1));
+        assertRowsIgnoringOrder(execute("SELECT * FROM mv_test2"), row(1,1,1,1));
+        assertRowsIgnoringOrder(execute("SELECT * FROM mv_test3"), row(1,1,1,1));
+        assertRowsIgnoringOrder(execute("SELECT * FROM mv_test4"), row(1,1,1));
+        assertRowsIgnoringOrder(execute("SELECT * FROM mv_test5"), row(1,1,1));
+
+        updateView("UPDATE %s set b = ? WHERE a=?", 2,1);
+
+        // row should be back in views.
+        assertRowsIgnoringOrder(execute("SELECT * FROM mv_test1"), row(1,2,1));
+        assertRowsIgnoringOrder(execute("SELECT * FROM mv_test2"), row(1,2,1,1));
+        assertRowsIgnoringOrder(execute("SELECT * FROM mv_test3"), row(1,2,1,1));
+        assertRowsIgnoringOrder(execute("SELECT * FROM mv_test4"), row(1,2,1));
+        assertRowsIgnoringOrder(execute("SELECT * FROM mv_test5"), row(1,1,1));
+
+        updateView("DELETE FROM %s where a=?",1);
+
+        assertRowCount(execute("SELECT * FROM mv_test1"), 0);
+        assertRowCount(execute("SELECT * FROM mv_test2"), 0);
+        assertRowCount(execute("SELECT * FROM mv_test3"), 0);
+        assertRowCount(execute("SELECT * FROM mv_test4"), 0);
+        assertRowCount(execute("SELECT * FROM mv_test5"), 0);
+
+        updateView("UPDATE %s set b=?,c=? where a=?",1,1,1); //upsert
+
+
+        assertRowsIgnoringOrder(execute("SELECT * FROM mv_test1"), row(1,1,null));
+        assertRows(execute("SELECT * FROM mv_test2"));
+        assertRowsIgnoringOrder(execute("SELECT * FROM mv_test3"), row(1,1,1,null));
+        assertRows(execute("SELECT * FROM mv_test4"));
+        assertRows(execute("SELECT * FROM mv_test5"));
+
+        updateView("DELETE FROM %s where a=?",1);
+
+        assertRowCount(execute("SELECT * FROM mv_test1"), 0);
+        assertRowCount(execute("SELECT * FROM mv_test2"), 0);
+        assertRowCount(execute("SELECT * FROM mv_test3"), 0);
+        assertRowCount(execute("SELECT * FROM mv_test4"), 0);
+        assertRowCount(execute("SELECT * FROM mv_test5"), 0);
+
+        execute("INSERT INTO %s (a, b, c, d) VALUES (?, ?, ?, ?)", 1,1,1,1);
+
+        // row should be back in views.
+        assertRowsIgnoringOrder(execute("SELECT * FROM mv_test1"), row(1,1,1));
+        assertRowsIgnoringOrder(execute("SELECT * FROM mv_test2"), row(1,1,1,1));
+        assertRowsIgnoringOrder(execute("SELECT * FROM mv_test3"), row(1,1,1,1));
+        assertRowsIgnoringOrder(execute("SELECT * FROM mv_test4"), row(1,1,1));
+        assertRowsIgnoringOrder(execute("SELECT * FROM mv_test5"), row(1,1,1));
+
+        updateView("DELETE FROM %s where a=?",1);
+
+        assertRowCount(execute("SELECT * FROM mv_test1"), 0);
+        assertRowCount(execute("SELECT * FROM mv_test2"), 0);
+        assertRowCount(execute("SELECT * FROM mv_test3"), 0);
+        assertRowCount(execute("SELECT * FROM mv_test4"), 0);
+        assertRowCount(execute("SELECT * FROM mv_test5"), 0);
+
+        dropView("mv_test1");
+        dropView("mv_test2");
+        dropView("mv_test3");
+        dropView("mv_test4");
+        dropView("mv_test5");
+        dropTable("DROP TABLE %s");
+
+    }
+
+    public void expectInvalidRequestException(String query, String expectedExceptionMessage) throws Throwable
+    {
+           try
+           {
+               execute(query);
+               Assert.fail("Query should have failed with exception. Query: " + formatQuery(query));
+           }
+           catch (InvalidRequestException e)
+           {
+               Assert.assertTrue(e.getMessage().contains(expectedExceptionMessage));
+           }
+    }
+
+    @Test
+    public void testDropBaseCol() throws Throwable
+    {
+        createTable("CREATE TABLE %s (a int, b int, c int, d int, e int, PRIMARY KEY (a))");
+
+        execute("USE " + keyspace());
+        executeNet(protocolVersion, "USE " + keyspace());
+
+        createView("mv_test1", "CREATE MATERIALIZED VIEW %s AS SELECT d FROM %%s WHERE a IS NOT NULL AND b IS NOT NULL and c = 1  PRIMARY KEY (a, b)");
+
+        waitForView(keyspace(), "mv_test1");
+
+        execute("INSERT INTO %s (a, b, c, d, e) VALUES (?, ?, ?, ?, ?)", 1,1,1,1,1);
+
+        expectInvalidRequestException(("ALTER TABLE %s DROP c"),"Cannot drop column c, depended on by materialized views");
+
+        assertRowsIgnoringOrder(execute("SELECT a,b,d FROM mv_test1"), row(1,1,1));
+
+        execute("ALTER TABLE %s drop e");
+        assertRowsIgnoringOrder(execute("SELECT a,b,d FROM mv_test1"), row(1,1,1));
+
+        assertRowsIgnoringOrder(execute("SELECT * from %s"), row(1,1,1,1));
     }
 }

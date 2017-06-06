@@ -91,6 +91,7 @@ public abstract class AlterTypeStatement extends SchemaAlteringStatement
             throw new InvalidRequestException(String.format("Cannot alter type in unknown keyspace %s", name.getKeyspace()));
 
         UserType toUpdate =
+
             ksm.types.get(name.getUserTypeName())
                      .orElseThrow(() -> new InvalidRequestException(String.format("No user type named %s exists.", name)));
 
@@ -114,8 +115,8 @@ public abstract class AlterTypeStatement extends SchemaAlteringStatement
         {
             ViewDefinition copy = view.copy();
             boolean modified = false;
-            for (ColumnDefinition def : copy.metadata.allColumns())
-                modified |= updateDefinition(copy.metadata, def, toUpdate.keyspace, toUpdate.name, updated);
+            for (ColumnDefinition def : copy.getMetadata().allColumns())
+                modified |= updateDefinition(copy.getMetadata(), def, toUpdate.keyspace, toUpdate.name, updated);
             if (modified)
                 MigrationManager.announceViewUpdate(copy, isLocalOnly);
         }

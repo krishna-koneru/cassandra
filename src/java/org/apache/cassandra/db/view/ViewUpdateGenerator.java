@@ -89,7 +89,7 @@ public class ViewUpdateGenerator
         this.baseDecoratedKey = basePartitionKey;
         this.basePartitionKey = extractKeyComponents(basePartitionKey, baseMetadata.getKeyValidator());
 
-        this.viewMetadata = view.getDefinition().metadata;
+        this.viewMetadata = view.getDefinition().getMetadata();
 
         this.currentViewEntryPartitionKey = new ByteBuffer[viewMetadata.partitionKeyColumns().size()];
         this.currentViewEntryBuilder = BTreeRow.sortedBuilder();
@@ -439,30 +439,50 @@ public class ViewUpdateGenerator
         assert view.baseNonPKColumnsInViewPK.size() <= 1; // This may change, but is currently an enforced limitation
 
         LivenessInfo baseLiveness = baseRow.primaryKeyLivenessInfo();
+        long timestamp = baseLiveness.timestamp();
+        int ttl = baseLiveness.ttl();
+        int expirationTime = baseLiveness.localExpirationTime();
 
-        if (view.baseNonPKColumnsInViewPK.isEmpty())
+
+        // Use view PK ttl if its higher.
+        if (!view.baseNonPKColumnsInViewPK.isEmpty())
         {
-            int ttl = baseLiveness.ttl();
-            int expirationTime = baseLiveness.localExpirationTime();
-            for (Cell cell : baseRow.cells())
+            ColumnDefinition baseColumn = view.baseNonPKColumnsInViewPK.get(0);
+            Cell cell = baseRow.getCell(baseColumn);
+            assert isLive(cell) : "We shouldn't have got there if the base row had no associated entry";
+
+            if (cell.ttl() > ttl)
             {
-                if (cell.ttl() > ttl)
-                {
-                    ttl = cell.ttl();
-                    expirationTime = cell.localDeletionTime();
-                }
+                ttl = cell.ttl();
+                expirationTime = cell.localDeletionTime();
             }
-            return ttl == baseLiveness.ttl()
-                 ? baseLiveness
-                 : LivenessInfo.withExpirationTime(baseLiveness.timestamp(), ttl, expirationTime);
         }
 
-        ColumnDefinition baseColumn = view.baseNonPKColumnsInViewPK.get(0);
-        Cell cell = baseRow.getCell(baseColumn);
-        assert isLive(cell) : "We shouldn't have got there if the base row had no associated entry";
+        /*
+         *  Use timestamp of last updated column (including non-pk)
+         *  This is required to avoid non-pk column tombstones.
+         *
+         *  CREATE TABLE base (a int, b int, c int, d int, PRIMARY KEY (a, b));
+         *  CREATE MATERIALIZED VIEW view AS SELECT * FROM base WHERE a IS NOT NULL AND b IS NOT NULL AND c = 1 PRIMARY KEY (a, b)
+         *  INSERT INTO base (a, b, c, d) VALUES (0, 0, 1, 0) USING TIMESTAMP 0;
+         *  UPDATE base SET c = 1 USING TIMESTAMP 2;
+         *  UPDATE base SET c = 0 USING TIMESTAMP 3;  -- view row should be deleted w/ timestamp 3
+         *  UPDATE base SET c = 1 USING TIMESTAMP 4;  -- view row should exist
+         *
+         *  If we use its timestamp from the base row (0), the view tombstone supercedes it, leaving d as null.
+         *  So, we set timestamp 4 as liveliness of row in view.We will not lose any updates to base table because, we do not use
+         *  use timestamps from base row.We always have timestamp of last update as liveliness/deletion timestamp in the view.
+         */
 
-        long timestamp = Math.max(baseLiveness.timestamp(), cell.timestamp());
-        return LivenessInfo.withExpirationTime(timestamp, cell.ttl(), cell.localDeletionTime());
+        for (ColumnData data : baseRow)
+        {
+            if (!view.getDefinition().includes(data.column().name))
+                continue;
+
+            timestamp = Math.max(timestamp, data.maxTimestamp());
+        }
+
+        return LivenessInfo.withExpirationTime(timestamp, ttl, expirationTime);
     }
 
     private long computeTimestampForEntryDeletion(Row baseRow)
