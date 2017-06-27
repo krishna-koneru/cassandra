@@ -25,9 +25,8 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
 import com.google.common.util.concurrent.Uninterruptibles;
-
-import junit.framework.Assert;
 import org.junit.After;
+import org.junit.Assert;
 import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.Test;
@@ -44,10 +43,9 @@ import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.db.SystemKeyspace;
 import org.apache.cassandra.db.compaction.CompactionManager;
+import org.apache.cassandra.exceptions.InvalidRequestException;
 import org.apache.cassandra.transport.ProtocolVersion;
 import org.apache.cassandra.utils.FBUtilities;
-
-import static org.junit.Assert.assertTrue;
 
 public class ViewTest extends CQLTester
 {
@@ -1063,7 +1061,7 @@ public class ViewTest extends CQLTester
 
         updateView("DELETE d FROM %s WHERE a = ? AND b = ?", 0, 0);
         mvRows = executeNet(protocolVersion, "SELECT a, d, b FROM mv1");
-        assertTrue(mvRows.isExhausted());
+        Assert.assertTrue(mvRows.isExhausted());
     }
 
     @Test
@@ -1089,7 +1087,7 @@ public class ViewTest extends CQLTester
 
         updateView("DELETE d FROM %s WHERE a = ? AND b = ?", 0, 0);
         mvRows = executeNet(protocolVersion, "SELECT a, d, b FROM mv1");
-        assertTrue(mvRows.isExhausted());
+        Assert.assertTrue(mvRows.isExhausted());
     }
 
     @Test
@@ -1292,5 +1290,54 @@ public class ViewTest extends CQLTester
             Uninterruptibles.sleepUninterruptibly(1, TimeUnit.SECONDS);
 
         assertRows(execute("SELECT count(*) FROM mv_test"), row(1024L));
+    }
+
+    public void expectInvalidRequestException(String query, String expectedExceptionMessage) throws Throwable
+    {
+        try
+        {
+            execute(query);
+            Assert.fail("Query should have failed with exception. Query: " + formatQuery(query));
+        }
+        catch (InvalidRequestException e)
+        {
+            Assert.assertTrue(e.getMessage().contains(expectedExceptionMessage));
+        }
+    }
+
+    @Test
+    public void testViewTokenRestrictions() throws Throwable
+    {
+        createTable("CREATE TABLE %s (a int, b int, c int, d int, PRIMARY KEY(a))");
+
+        execute("USE " + keyspace());
+        executeNet(protocolVersion, "USE " + keyspace());
+
+        execute("INSERT into %s (a,b,c,d) VALUES (?,?,?,?)", 1,2,3,4);
+
+        expectInvalidRequestException("CREATE MATERIALIZED VIEW mv_test AS SELECT a,b,c FROM %s WHERE a IS NOT NULL and b IS NOT NULL and token(a) = token(1) PRIMARY KEY(b,a)",
+                                      "Cannot use function when defining a materialized view");
+
+    }
+
+    @Test
+    public void testViewAlterBaseTable() throws Throwable
+    {
+        createTable("CREATE TABLE %s (a int, b int, c int, d int, PRIMARY KEY(a))");
+
+        execute("USE " + keyspace());
+        executeNet(protocolVersion, "USE " + keyspace());
+
+        execute("INSERT into %s (a,b,c,d) VALUES (?,?,?,?)", 1,2,3,4);
+
+        createView("mv_test", "CREATE MATERIALIZED VIEW %s AS SELECT a,b,c FROM %%s WHERE a IS NOT NULL and b IS NOT NULL PRIMARY KEY(b,a)");
+
+        expectInvalidRequestException("ALTER TABLE %s DROP a", "Cannot drop PRIMARY KEY part a");
+        expectInvalidRequestException("ALTER TABLE %s DROP b","Cannot drop column b, depended on by materialized views");
+        expectInvalidRequestException("ALTER TABLE %s DROP c","Cannot drop column c, depended on by materialized views");
+        execute("ALTER TABLE %s DROP d");
+        assertRows(execute("SELECT * FROM %s"), row(1,2,3));
+        assertRows(execute("SELECT a,b,c FROM mv_test"), row(1,2,3));
+
     }
 }
