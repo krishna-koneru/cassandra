@@ -460,6 +460,11 @@ public interface Row extends Unfiltered, Collection<ColumnData>
         public void addPrimaryKeyLivenessInfo(LivenessInfo info);
 
         /**
+         * @return the liveness information for the partition key columns of the built row.
+         */
+        public LivenessInfo getPrimaryKeyLivenessInfo();
+
+        /**
          * Adds the deletion information for this row.
          *
          * This call is optional and can be skipped if the row is not deleted.

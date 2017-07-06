@@ -73,6 +73,11 @@ public class RowBuilder implements Row.Builder
         livenessInfo = info;
     }
 
+    public LivenessInfo getPrimaryKeyLivenessInfo()
+    {
+        return this.livenessInfo;
+    }
+
     public void addRowDeletion(Row.Deletion deletion)
     {
         assert deletionTime == null;

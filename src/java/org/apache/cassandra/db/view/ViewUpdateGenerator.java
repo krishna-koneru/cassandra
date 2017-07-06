@@ -18,19 +18,29 @@
 package org.apache.cassandra.db.view;
 
 import java.nio.ByteBuffer;
-import java.util.*;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.Map;
 
 import com.google.common.collect.Iterators;
 import com.google.common.collect.PeekingIterator;
 
+import org.apache.cassandra.db.Clustering;
+import org.apache.cassandra.db.DecoratedKey;
+import org.apache.cassandra.db.DeletionTime;
+import org.apache.cassandra.db.LivenessInfo;
+import org.apache.cassandra.db.marshal.AbstractType;
+import org.apache.cassandra.db.marshal.CompositeType;
+import org.apache.cassandra.db.partitions.PartitionUpdate;
+import org.apache.cassandra.db.rows.BTreeRow;
+import org.apache.cassandra.db.rows.BufferCell;
+import org.apache.cassandra.db.rows.Cell;
+import org.apache.cassandra.db.rows.ColumnData;
+import org.apache.cassandra.db.rows.ComplexColumnData;
+import org.apache.cassandra.db.rows.Row;
 import org.apache.cassandra.schema.ColumnMetadata;
 import org.apache.cassandra.schema.Schema;
 import org.apache.cassandra.schema.TableMetadata;
-import org.apache.cassandra.db.*;
-import org.apache.cassandra.db.rows.*;
-import org.apache.cassandra.db.partitions.*;
-import org.apache.cassandra.db.marshal.AbstractType;
-import org.apache.cassandra.db.marshal.CompositeType;
 
 /**
  * Creates the updates to apply to a view given the existing rows in the base
@@ -198,7 +208,7 @@ public class ViewUpdateGenerator
         Cell after = mergedBaseRow.getCell(baseColumn);
 
         // If the update didn't modified this column, the cells will be the same object so it's worth checking
-        if (before == after)
+        if (before == after && before != null && before.ttl() == after.ttl())
             return isLive(before) ? UpdateAction.UPDATE_EXISTING : UpdateAction.NONE;
 
         if (!isLive(before))
@@ -207,6 +217,7 @@ public class ViewUpdateGenerator
             return UpdateAction.DELETE_OLD;
 
         return baseColumn.cellValueType().compare(before.value(), after.value()) == 0
+               && before.ttl() == after.ttl() /* Also make sure PK TTL is not modified */
              ? UpdateAction.UPDATE_EXISTING
              : UpdateAction.SWITCH_ENTRY;
     }
@@ -440,11 +451,11 @@ public class ViewUpdateGenerator
         assert view.baseNonPKColumnsInViewPK.size() <= 1; // This may change, but is currently an enforced limitation
 
         LivenessInfo baseLiveness = baseRow.primaryKeyLivenessInfo();
+        int ttl = baseLiveness.ttl();
+        int expirationTime = baseLiveness.localExpirationTime();
 
         if (view.baseNonPKColumnsInViewPK.isEmpty())
         {
-            int ttl = baseLiveness.ttl();
-            int expirationTime = baseLiveness.localExpirationTime();
             for (Cell cell : baseRow.cells())
             {
                 if (cell.ttl() > ttl)
@@ -462,8 +473,17 @@ public class ViewUpdateGenerator
         Cell cell = baseRow.getCell(baseColumn);
         assert isLive(cell) : "We shouldn't have got there if the base row had no associated entry";
 
+        // All view PK columns have IS NOT NULL filter.So,if viwe pk cell (that is non-pk on base) expires,
+        // view row must expire.Use view pk cell ttl (if it exists)
+        if (cell.isExpiring())
+        {
+            // Base row does not have a TTL.So use cell ttl
+            ttl = cell.ttl();
+            expirationTime = cell.localDeletionTime();
+        }
+
         long timestamp = Math.max(baseLiveness.timestamp(), cell.timestamp());
-        return LivenessInfo.withExpirationTime(timestamp, cell.ttl(), cell.localDeletionTime());
+        return LivenessInfo.withExpirationTime(timestamp, ttl, expirationTime);
     }
 
     private long computeTimestampForEntryDeletion(Row baseRow)
@@ -505,7 +525,53 @@ public class ViewUpdateGenerator
     private void addCell(ColumnMetadata viewColumn, Cell baseTableCell)
     {
         assert !viewColumn.isPrimaryKeyColumn();
-        currentViewEntryBuilder.addCell(baseTableCell.withUpdatedColumn(viewColumn));
+
+        LivenessInfo primaryKeyLivenessInfo = currentViewEntryBuilder.getPrimaryKeyLivenessInfo();
+        assert primaryKeyLivenessInfo != null : "Could not get primary key liveness for view entry";
+
+        Cell viewCell = baseTableCell.withUpdatedColumn(viewColumn);
+        int cellTTL = baseTableCell.ttl();
+
+        if (baseTableCell.isTombstone())
+        {
+            currentViewEntryBuilder.addCell(viewCell);
+            return;
+        }
+
+        // View non-pk cell can never outlive view row.If PK columns expire, they become null and row
+        // will not match mandatory IS NOT NULL filter and entire row has to be deleted.
+        // Create a Cell with pk ttl to make sure entire row expires.
+
+        if (baseTableCell.isExpiring() && primaryKeyLivenessInfo.isExpiring())
+        {
+            // both pk and cell have TTL on them. Cells TTL should be capped at PK ttl.
+            cellTTL = Math.min(primaryKeyLivenessInfo.ttl(), baseTableCell.ttl());
+        }
+        else if (!baseTableCell.isExpiring() && primaryKeyLivenessInfo.isExpiring())
+        {
+            // Cell has no TTL. Use PK ttl to expire it.
+            cellTTL = primaryKeyLivenessInfo.ttl();
+        }
+
+        if (primaryKeyLivenessInfo.isExpiring() || baseTableCell.isExpiring())
+        {
+            viewCell =  BufferCell.expiring(viewColumn,
+                                            baseTableCell.timestamp(),
+                                            cellTTL,
+                                            nowInSec,
+                                            baseTableCell.value(),
+                                            baseTableCell.path());
+        }
+        else
+        {
+            viewCell = BufferCell.live(viewColumn,
+                                       baseTableCell.timestamp(),
+                                       baseTableCell.value(),
+                                       baseTableCell.path());
+        }
+
+        currentViewEntryBuilder.addCell(viewCell);
+
     }
 
     /**

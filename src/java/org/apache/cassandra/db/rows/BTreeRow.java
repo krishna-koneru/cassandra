@@ -746,6 +746,11 @@ public class BTreeRow extends AbstractRow
                 this.primaryKeyLivenessInfo = info;
         }
 
+        public LivenessInfo getPrimaryKeyLivenessInfo()
+        {
+            return this.primaryKeyLivenessInfo;
+        }
+
         public void addRowDeletion(Deletion deletion)
         {
             this.deletion = deletion;
